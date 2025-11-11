@@ -1,20 +1,17 @@
 // ModifyRenderingSettingsPrefabSystem.cs
-// Applies AdvancedHoverSystem settings to RenderingSettings prefab & runtime.
-// Runs once after each city finishes loading, and re-applies only when settings change.
+// Applies AdvancedHoverSystem settings to RenderingSettings prefab & runtime,
+// and reacts to F8/F9 key actions.
 
 namespace HighlightsAndGuidelinesTweaks.Systems
 {
     using Colossal.Logging;
     using Game;
+    using Game.Input;        // ProxyAction
     using Game.Prefabs;
     using Game.Rendering;
     using Unity.Entities;
     using UnityEngine;
 
-    /// <summary>
-    /// Applies rendering and hover outline settings to the RenderingSettings prefab entity
-    /// and runtime RenderingSettingsData, driven by AdvancedHoverSystem.Setting.
-    /// </summary>
     public partial class ModifyRenderingSettingsPrefabSystem : GameSystemBase
     {
         public readonly PrefabID RenderingSettingsPrefab =
@@ -72,17 +69,42 @@ namespace HighlightsAndGuidelinesTweaks.Systems
         }
 
         /// <summary>
-        /// Per-frame: cheap check to see if settings changed; re-apply only when needed.
-        /// This handles "player opens Options, changes color, goes back into city".
+        /// Per-frame: handle keybinds (F8/F9) and re-apply settings if they changed.
+        /// This covers:
+        ///  - Player uses Options UI.
+        ///  - Player presses F8/F9 in the city.
         /// </summary>
         protected override void OnUpdate()
         {
+            var settings = AdvancedHoverSystem.Mod.Settings;
+            if (settings == null)
+            {
+                return;
+            }
+
+            // --- Handle key actions, if available ---
+            ProxyAction? toggleAction = AdvancedHoverSystem.Mod.ToggleHoverAction;
+            ProxyAction? cycleAction  = AdvancedHoverSystem.Mod.CycleColorAction;
+
+            if (toggleAction != null && toggleAction.WasPressedThisFrame())
+            {
+                settings.DisableHoverOutline = !settings.DisableHoverOutline;
+                m_Log.Info($"[Keybind] F8 → DisableHoverOutline = {settings.DisableHoverOutline}");
+            }
+
+            if (cycleAction != null && cycleAction.WasPressedThisFrame())
+            {
+                settings.HoverColor = NextPreset(settings.HoverColor);
+                m_Log.Info($"[Keybind] F9 → HoverColor preset = {settings.HoverColor}");
+            }
+
+            // Apply from settings, only if something changed
             ApplyFromSettings(force: false);
         }
 
         /// <summary>
         /// Called when a city has finished loading.
-        /// We force-apply here so each loaded save gets correct settings.
+        /// Force-apply settings so each loaded save gets correct behavior.
         /// </summary>
         protected override void OnGameLoadingComplete(Purpose purpose, GameMode mode)
         {
@@ -92,36 +114,20 @@ namespace HighlightsAndGuidelinesTweaks.Systems
             ApplyFromSettings(force: true);
         }
 
-        /// <summary>
-        /// Set the RenderingSettingsData on the RenderingSettings prefab entity if present.
-        /// (Helper kept in case we want to call it elsewhere.)
-        /// </summary>
-        public void SetRenderingSettingsData(RenderingSettingsData newRenderingSettingsData)
+        private AdvancedHoverSystem.HoverColorPreset NextPreset(AdvancedHoverSystem.HoverColorPreset current)
         {
-            if (m_PrefabSystem.TryGetPrefab(RenderingSettingsPrefab, out PrefabBase prefab)
-                && m_PrefabSystem.TryGetEntity(prefab, out Entity prefabEntity)
-                && EntityManager.HasComponent<RenderingSettingsData>(prefabEntity))
+            // Cycle through enum values in numeric order, wrap at end.
+            var values = (AdvancedHoverSystem.HoverColorPreset[])System.Enum.GetValues(
+                typeof(AdvancedHoverSystem.HoverColorPreset));
+
+            int index = System.Array.IndexOf(values, current);
+            if (index < 0)
             {
-                EntityManager.SetComponentData(prefabEntity, newRenderingSettingsData);
+                return AdvancedHoverSystem.HoverColorPreset.Purple;
             }
 
-            m_Log.Info($"{nameof(ModifyRenderingSettingsPrefabSystem)}.{nameof(SetRenderingSettingsData)} complete.");
-        }
-
-        /// <summary>
-        /// Set GuideLineSettingsData on the RenderingSettings prefab entity if present.
-        /// (Not currently used by AdvancedHoverSystem, but preserved for future tweaks.)
-        /// </summary>
-        public void SetGuideLineSettingsData(GuideLineSettingsData newGuideLinesSettingsData)
-        {
-            if (m_PrefabSystem.TryGetPrefab(RenderingSettingsPrefab, out PrefabBase prefab)
-                && m_PrefabSystem.TryGetEntity(prefab, out Entity prefabEntity)
-                && EntityManager.HasComponent<GuideLineSettingsData>(prefabEntity))
-            {
-                EntityManager.SetComponentData(prefabEntity, newGuideLinesSettingsData);
-            }
-
-            m_Log.Info($"{nameof(ModifyRenderingSettingsPrefabSystem)}.{nameof(SetGuideLineSettingsData)} complete.");
+            index = (index + 1) % values.Length;
+            return values[index];
         }
 
         /// <summary>
@@ -140,7 +146,7 @@ namespace HighlightsAndGuidelinesTweaks.Systems
             var preset = s.HoverColor;
             float brightness = Mathf.Clamp(s.HoverBrightness, 0f, 2f);
 
-            // Skip work if nothing changed and we aren't forced
+            // Skip if nothing changed and we aren't forced
             if (!force
                 && disabled == m_LastDisabled
                 && preset == m_LastPreset
